@@ -45,9 +45,21 @@ func (entry *Entry) Value() (string, bool) {
 	return entry.value, true
 }
 
+func (entry *Entry) Timestamp() int64 {
+	return entry.timestamp
+}
+
+func (entry *Entry) IsDead() bool {
+	return entry.isDead
+}
+
 func (entry *Entry) Kill() {
 	entry.isDead = true
 	entry.value = ""
+}
+
+func CompareEntries(e1 *Entry, e2 *Entry) int {
+	return strings.Compare(e1.key, e2.key)
 }
 
 func (entry *Entry) Serialize() string {
