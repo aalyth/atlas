@@ -2,8 +2,6 @@ package storage
 
 import (
 	"atlas/internal/common"
-	"atlas/pkg/utils"
-	"crypto/aes"
 	"errors"
 	"path"
 	"slices"
@@ -54,6 +52,21 @@ func (lsm *Lsm) Get(key string) (*common.Entry, bool, error) {
 	return nil, false, nil
 }
 
+func (lsm *Lsm) Merge(wal *Wal) error {
+	entries, err := wal.CloseAndGetEntries()
+	if err != nil {
+		return err
+	}
+
+	err = lsm.mergeFirstLevel(entries)
+	if err != nil {
+		return err
+	}
+
+	// TODO: subsequent higher level merging
+	return nil
+}
+
 func (lsm *Lsm) mergeFirstLevel(walEntries []*common.Entry) error {
 	resultEntries := walEntries
 	for _, table := range lsm.levels[0] {
@@ -68,15 +81,36 @@ func (lsm *Lsm) mergeFirstLevel(walEntries []*common.Entry) error {
 	resultEntries = deduplicateAndFilterEntries(resultEntries)
 	slices.SortFunc(resultEntries, common.CompareEntries)
 
-	table, err := NewSSTable(lsm.getNewSSTableFilename(0), resultEntries)
-	if err != nil {
-		return err
+	var entryBuckets [][]*common.Entry
+	var currentBucket []*common.Entry
+	var currentBucketSize uint64 = 0
+	firstLevelMaxSize := lsm.config.levelConfig[0].maxFileByteSize
+	for _, entry := range resultEntries {
+		currentBucketSize += uint64(len(entry.Serialize()))
+		currentBucket = append(currentBucket, entry)
+		if currentBucketSize >= firstLevelMaxSize {
+			entryBuckets = append(entryBuckets, currentBucket)
+			currentBucket = nil
+			currentBucketSize = 0
+		}
+	}
+
+	if len(currentBucket) > 0 {
+		entryBuckets = append(entryBuckets, currentBucket)
+	}
+
+	tables := make([]*SSTable, len(entryBuckets))
+	for i, entryBucket := range entryBuckets {
+		var err error
+		tables[i], err = NewSSTable(lsm.getNewSSTableFilename(0), entryBucket)
+		if err != nil {
+			return err
+		}
 	}
 
 	// TODO:
 	// [ ] old table cleanup
-	// [ ] split the new level on smaller SSTables
-	lsm.levels[0] = []*SSTable{table}
+	lsm.levels[0] = tables
 	return nil
 }
 

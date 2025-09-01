@@ -24,7 +24,11 @@ func CreateWriteAheadLog(filename string) (*Wal, error) {
 	return &Wal{file, filename, nil, 0}, nil
 }
 
-func (wal *Wal) Append(entry common.Entry) error {
+func (wal *Wal) Count() int {
+	return len(wal.index)
+}
+
+func (wal *Wal) Append(entry *common.Entry) error {
 	serialized := entry.Serialize()
 	written, err := wal.file.Write([]byte(serialized))
 	if err != nil {
