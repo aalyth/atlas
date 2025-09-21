@@ -92,7 +92,6 @@ func restoreSSTablesFromDirectory(dir string) ([]*SSTable, error) {
 	}
 
 	var sstables []*SSTable
-	var timestamps []int64
 	for _, entry := range dirFiles {
 		if entry.IsDir() {
 			continue
@@ -103,11 +102,6 @@ func restoreSSTablesFromDirectory(dir string) ([]*SSTable, error) {
 			continue
 		}
 
-		timestamp, err := strconv.ParseInt(matches[1], 10, 64)
-		if err != nil {
-			continue
-		}
-
 		filePath := filepath.Join(dir, entry.Name())
 		sstable, err := RestoreSSTable(filePath)
 		if err != nil {
@@ -115,9 +109,7 @@ func restoreSSTablesFromDirectory(dir string) ([]*SSTable, error) {
 		}
 
 		sstables = append(sstables, sstable)
-		timestamps = append(timestamps, timestamp)
 	}
-
 	return sstables, nil
 }
 

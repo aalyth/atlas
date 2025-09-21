@@ -37,7 +37,7 @@ func RestoreWal(filename string) (*Wal, error) {
 		logger.Error("Failed restoring WAL file (%s): %v", file, err)
 		return nil, err
 	}
-
+	return nil, nil
 }
 
 func (wal *Wal) Count() int {

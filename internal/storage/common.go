@@ -45,6 +45,5 @@ func getEntriesFromCurrentFileOffset(file *os.File, entryIndex []int64) ([]*comm
 
 		result = append(result, entry)
 	}
-
-	return nil, nil
+	return result, nil
 }
