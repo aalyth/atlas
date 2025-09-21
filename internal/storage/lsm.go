@@ -3,25 +3,122 @@ package storage
 import (
 	"atlas/internal/common"
 	"errors"
+	"os"
 	"path"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"time"
 )
 
 type LsmLevelConfig struct {
-	maxFileByteSize uint64
+	MaxFileSize uint64
+	MaxTables   int
 }
 
 type LsmConfig struct {
-	rootDir     string
-	levels      uint
-	levelConfig []LsmLevelConfig
+	Dir    string
+	Levels []LsmLevelConfig
 }
 
 type Lsm struct {
 	levels [][]*SSTable
 	config LsmConfig
+}
+
+var sstableRegex = regexp.MustCompile(`^(\d+)\.sstable$`)
+
+func InitializeLsm(config LsmConfig) (*Lsm, error) {
+	if err := config.verify(); err != nil {
+		return nil, err
+	}
+
+	stat, err := os.Stat(config.Dir)
+	if os.IsNotExist(err) {
+		return createNewLsm(config)
+	}
+
+	if !stat.IsDir() {
+		return nil, errors.New("Invalid LSM config - root path is not directory")
+	}
+
+	return restoreLsm(config)
+}
+
+func createNewLsm(config LsmConfig) (*Lsm, error) {
+	var levels [][]*SSTable
+	for idx := range config.Levels {
+		dirName := strconv.FormatInt(int64(idx), 10)
+		if err := os.Mkdir(dirName, 0755); err != nil {
+			return nil, err
+		}
+
+		levels = append(levels, nil)
+	}
+	return &Lsm{
+		levels: levels,
+		config: config,
+	}, nil
+}
+
+func restoreLsm(config LsmConfig) (*Lsm, error) {
+	levels := make([][]*SSTable, len(config.Levels))
+	for levelIdx := range config.Levels {
+		levelDir := filepath.Join(config.Dir, strconv.Itoa(levelIdx))
+
+		sstables, err := restoreSSTablesFromDirectory(levelDir)
+		if err != nil {
+			return nil, err
+		}
+
+		levels[levelIdx] = sstables
+	}
+
+	return &Lsm{
+		levels: levels,
+		config: config,
+	}, nil
+}
+
+func restoreSSTablesFromDirectory(dir string) ([]*SSTable, error) {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return []*SSTable{}, nil
+	}
+
+	dirFiles, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var sstables []*SSTable
+	var timestamps []int64
+	for _, entry := range dirFiles {
+		if entry.IsDir() {
+			continue
+		}
+
+		matches := sstableRegex.FindStringSubmatch(entry.Name())
+		if len(matches) != 2 {
+			continue
+		}
+
+		timestamp, err := strconv.ParseInt(matches[1], 10, 64)
+		if err != nil {
+			continue
+		}
+
+		filePath := filepath.Join(dir, entry.Name())
+		sstable, err := RestoreSSTable(filePath)
+		if err != nil {
+			return nil, err
+		}
+
+		sstables = append(sstables, sstable)
+		timestamps = append(timestamps, timestamp)
+	}
+
+	return sstables, nil
 }
 
 func (lsm *Lsm) MergeWal(wal *Wal) error {
@@ -84,7 +181,7 @@ func (lsm *Lsm) mergeFirstLevel(walEntries []*common.Entry) error {
 	var entryBuckets [][]*common.Entry
 	var currentBucket []*common.Entry
 	var currentBucketSize uint64 = 0
-	firstLevelMaxSize := lsm.config.levelConfig[0].maxFileByteSize
+	firstLevelMaxSize := lsm.config.Levels[0].MaxFileSize
 	for _, entry := range resultEntries {
 		currentBucketSize += uint64(len(entry.Serialize()))
 		currentBucket = append(currentBucket, entry)
@@ -117,7 +214,7 @@ func (lsm *Lsm) mergeFirstLevel(walEntries []*common.Entry) error {
 func (lsm *Lsm) getNewSSTableFilename(tableLevel int64) string {
 	timestamp := time.Now().UnixMilli()
 	return path.Join(
-		lsm.config.rootDir,
+		lsm.config.Dir,
 		strconv.FormatInt(tableLevel, 10),
 		strconv.FormatInt(timestamp, 10),
 	)
@@ -151,13 +248,8 @@ func deduplicateAndFilterEntries(entries []*common.Entry) []*common.Entry {
 	return result
 }
 
-// func getNextMinValue(walEntries []*common.Entry, iterators []*SSTableIterator) (*common.Entry, error) {}
-
 func (config *LsmConfig) verify() error {
-	if len(config.levelConfig) != int(config.levels) {
-		return errors.New("Invalid LSM config - level configurations must match the number of levels")
-	}
-	if config.levels == 0 {
+	if len(config.Levels) == 0 {
 		return errors.New("Invalid LSM config - LSM trees need at least 1 level")
 	}
 	return nil

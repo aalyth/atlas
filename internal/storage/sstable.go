@@ -2,7 +2,9 @@ package storage
 
 import (
 	"atlas/internal/common"
+	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"slices"
@@ -137,7 +139,69 @@ func NewSSTable(filename string, entries []*common.Entry) (*SSTable, error) {
 		minKey:   minKey,
 		maxKey:   maxKey,
 	}, nil
+}
 
+func RestoreSSTable(filePath string) (*SSTable, error) {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("SSTable file does not exist: %s", filePath)
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var index []int64
+	var currentOffset int64 = 0
+
+	minKey := ""
+	maxKey := ""
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// +1 for the newline
+		lineLength := int64(len(line) + 1)
+
+		if strings.TrimSpace(line) == "" {
+			currentOffset += lineLength
+			continue
+		}
+
+		entry, err := common.DeserializeEntry(line)
+		if err != nil {
+			return nil, err
+		}
+
+		index = append(index, currentOffset)
+		currentOffset += lineLength
+
+		if minKey == "" || entry.Key() < minKey {
+			minKey = entry.Key()
+		}
+
+		if maxKey == "" || entry.Key() > maxKey {
+			maxKey = entry.Key()
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	sstableFile, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SSTable{
+		file:     sstableFile,
+		filename: filePath,
+		index:    index,
+		minKey:   minKey,
+		maxKey:   maxKey,
+	}, nil
 }
 
 func (table *SSTable) Get(key string) (*common.Entry, bool, error) {
