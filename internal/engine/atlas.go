@@ -1,13 +1,14 @@
 package engine
 
 import (
-	"atlas/internal/common"
+	"atlas/internal/data"
 	"atlas/internal/storage"
-	"atlas/pkg/logger"
 	"fmt"
 	"os"
 	"path"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type AtlasConfig struct {
@@ -19,23 +20,33 @@ type Atlas struct {
 	wal *storage.Wal
 	lsm *storage.Lsm
 
-	cache  map[string]*common.Entry
+	cache  map[string]*data.Entry
 	config AtlasConfig
+	log    *zap.Logger
 }
 
-func NewAtlas(config AtlasConfig) (*Atlas, error) {
+func NewAtlas(log *zap.Logger, config AtlasConfig) (*Atlas, error) {
 	if err := os.MkdirAll(config.Wal.Dir, 0755); err != nil {
-		logger.Error("Failed creating WAL directory: %v", err)
+		log.Error("create WAL dir failed",
+			zap.String("dir", config.Wal.Dir), zap.Error(err))
 		return nil, err
 	}
 
 	if err := os.MkdirAll(config.Lsm.Dir, 0755); err != nil {
-		logger.Error("Failed creating LSM directory: %v", err)
+		log.Error("create LSM dir failed",
+			zap.String("dir", config.Lsm.Dir), zap.Error(err))
+		return nil, err
+	}
+
+	walLog := log.With(zap.String("component", "wal"))
+
+	cache, err := storage.RestoreEntries(walLog, config.Wal.Dir)
+	if err != nil {
 		return nil, err
 	}
 
 	walFilename := buildWalFilename(config)
-	wal, err := storage.CreateWal(walFilename)
+	wal, err := storage.NewWal(walLog, walFilename)
 	if err != nil {
 		return nil, err
 	}
@@ -45,15 +56,20 @@ func NewAtlas(config AtlasConfig) (*Atlas, error) {
 		return nil, err
 	}
 
+	if cache == nil {
+		cache = make(map[string]*data.Entry)
+	}
+
 	return &Atlas{
 		wal:    wal,
 		lsm:    lsm,
-		cache:  make(map[string]*common.Entry),
+		cache:  cache,
 		config: config,
+		log:    log,
 	}, nil
 }
 
-func (atlas *Atlas) Get(key string) (*common.Entry, bool, error) {
+func (atlas *Atlas) Get(key string) (*data.Entry, bool, error) {
 	entry, cached := atlas.cache[key]
 	if cached {
 		return filterResponse(entry, nil)
@@ -72,14 +88,22 @@ func (atlas *Atlas) Get(key string) (*common.Entry, bool, error) {
 }
 
 func (atlas *Atlas) Insert(key, value string) error {
-	return atlas.updateEntry(common.NewEntry(key, value))
+	entry, err := data.NewEntry(key, value)
+	if err != nil {
+		return err
+	}
+	return atlas.updateEntry(entry)
 }
 
 func (atlas *Atlas) Delete(key string) error {
-	return atlas.updateEntry(common.NewEmptyEntry(key))
+	entry, err := data.NewEmptyEntry(key)
+	if err != nil {
+		return err
+	}
+	return atlas.updateEntry(entry)
 }
 
-func (atlas *Atlas) updateEntry(entry *common.Entry) error {
+func (atlas *Atlas) updateEntry(entry *data.Entry) error {
 	err := atlas.wal.Append(entry)
 	if err != nil {
 		return err
@@ -95,7 +119,7 @@ func buildWalFilename(config AtlasConfig) string {
 	return path.Join(config.Wal.Dir, filename)
 }
 
-func filterResponse(entry *common.Entry, err error) (*common.Entry, bool, error) {
+func filterResponse(entry *data.Entry, err error) (*data.Entry, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}

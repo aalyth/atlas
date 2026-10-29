@@ -3,8 +3,11 @@ package main
 import (
 	"atlas/internal/engine"
 	"atlas/internal/storage"
-	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -15,9 +18,24 @@ const (
 )
 
 func main() {
-	_, err := engine.NewAtlas(engine.AtlasConfig{
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("failed building logger: %v", err)
+	}
+	defer logger.Sync()
+
+	dataDir := os.Getenv("ATLAS_ROOT")
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			logger.Fatal("resolve home dir failed", zap.Error(err))
+		}
+		dataDir = filepath.Join(home, "atlas")
+	}
+
+	atlasCfg := engine.AtlasConfig{
 		Lsm: storage.LsmConfig{
-			Dir: "~/atlas/lsm",
+			Dir: filepath.Join(dataDir, "lsm"),
 			Levels: []storage.LsmLevelConfig{
 				{MaxFileSize: 10 * kb},
 				{MaxFileSize: 100 * kb},
@@ -27,14 +45,20 @@ func main() {
 			},
 		},
 		Wal: storage.WalConfig{
-			Dir:     "~/atlas/wal",
+			Dir:     filepath.Join(dataDir, "wal"),
 			MaxLogs: -1,
 		},
-	})
-
-	if err != nil {
-		log.Fatal("Failed booting up Atlas engine: %v", err)
 	}
 
-	fmt.Printf("Hello world\n")
+	serverCfg := engine.AtlasServerConfig{
+		Engine: atlasCfg,
+		Port:   8080,
+	}
+
+	server, err := engine.NewAtlasServer(logger, serverCfg)
+	if err != nil {
+		logger.Fatal("boot Atlas engine failed", zap.Error(err))
+	}
+
+	server.Start()
 }

@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"atlas/internal/common"
+	"atlas/internal/data"
 	"bufio"
 	"errors"
 	"fmt"
@@ -15,7 +15,7 @@ import (
 type SSTable struct {
 	file     *os.File
 	filename string
-	index    []int64
+	index    []int
 	minKey   string
 	maxKey   string
 }
@@ -23,15 +23,15 @@ type SSTable struct {
 type SSTableBuilder struct {
 	file     *os.File
 	filename string
-	offset   int64
-	index    []int64
+	offset   int
+	index    []int
 	minKey   string
 	maxKey   string
 }
 
 type SSTableIterator struct {
 	table     *SSTable
-	peekCache *common.Entry
+	peekCache *data.Entry
 	position  int
 }
 
@@ -51,7 +51,7 @@ func NewSSTableBuilder(filename string) (*SSTableBuilder, error) {
 	}, nil
 }
 
-func (builder *SSTableBuilder) AddSorted(entry *common.Entry) error {
+func (builder *SSTableBuilder) AddSorted(entry *data.Entry) error {
 	serialized := entry.Serialize()
 	written, err := builder.file.Write([]byte(serialized))
 	if err != nil {
@@ -70,7 +70,7 @@ func (builder *SSTableBuilder) AddSorted(entry *common.Entry) error {
 		builder.maxKey = entry.Key()
 	}
 
-	builder.offset += int64(written)
+	builder.offset += written
 	builder.index = append(builder.index, builder.offset)
 	return nil
 }
@@ -85,13 +85,13 @@ func (builder *SSTableBuilder) Build() *SSTable {
 	}
 }
 
-func NewSSTable(filename string, entries []*common.Entry) (*SSTable, error) {
+func NewSSTable(filename string, entries []*data.Entry) (*SSTable, error) {
 	if len(entries) == 0 {
 		return nil, errors.New("Failed craeting SSTable - at least 1 entry is required")
 	}
 
-	if !slices.IsSortedFunc(entries, common.CompareEntries) {
-		slices.SortFunc(entries, common.CompareEntries)
+	if !slices.IsSortedFunc(entries, data.CompareEntries) {
+		slices.SortFunc(entries, data.CompareEntries)
 	}
 
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0644)
@@ -99,8 +99,8 @@ func NewSSTable(filename string, entries []*common.Entry) (*SSTable, error) {
 		return nil, err
 	}
 
-	var offset int64 = 0
-	var index []int64 = nil
+	var offset int = 0
+	var index []int = nil
 	minKey := entries[0].Key()
 	maxKey := entries[0].Key()
 	for _, entry := range entries {
@@ -128,7 +128,7 @@ func NewSSTable(filename string, entries []*common.Entry) (*SSTable, error) {
 			return nil, errors.New("Failed creating SSTable - partially written entry")
 		}
 
-		offset += int64(written)
+		offset += written
 		index = append(index, offset)
 	}
 
@@ -152,24 +152,25 @@ func RestoreSSTable(filePath string) (*SSTable, error) {
 	}
 	defer file.Close()
 
-	var index []int64
-	var currentOffset int64 = 0
+	var index []int
+	var currentOffset int = 0
 
 	minKey := ""
 	maxKey := ""
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), data.MaxEntrySize)
 	for scanner.Scan() {
 		line := scanner.Text()
 
 		// +1 for the newline
-		lineLength := int64(len(line) + 1)
+		lineLength := len(line) + 1
 
 		if strings.TrimSpace(line) == "" {
 			currentOffset += lineLength
 			continue
 		}
 
-		entry, err := common.DeserializeEntry(line)
+		entry, err := data.DeserializeEntry(line)
 		if err != nil {
 			return nil, err
 		}
@@ -204,7 +205,7 @@ func RestoreSSTable(filePath string) (*SSTable, error) {
 	}, nil
 }
 
-func (table *SSTable) Get(key string) (*common.Entry, bool, error) {
+func (table *SSTable) Get(key string) (*data.Entry, bool, error) {
 	if key < table.minKey || key > table.maxKey {
 		return nil, false, nil
 	}
@@ -232,14 +233,18 @@ func (table *SSTable) Get(key string) (*common.Entry, bool, error) {
 	return nil, false, nil
 }
 
-func (table *SSTable) Entries() ([]*common.Entry, error) {
+func (table *SSTable) Entries() ([]*data.Entry, error) {
 	if len(table.index) == 0 {
-		return []*common.Entry{}, nil
+		return []*data.Entry{}, nil
 	}
 
-	offsetIndex := append([]int64{0}, table.index...)
+	if _, err := table.file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
 
-	var result []*common.Entry = nil
+	offsetIndex := append([]int{0}, table.index...)
+
+	var result []*data.Entry = nil
 	for i, offset := range offsetIndex[1:] {
 		prevOffset := offsetIndex[i]
 
@@ -249,7 +254,7 @@ func (table *SSTable) Entries() ([]*common.Entry, error) {
 			return nil, err
 		}
 
-		entry, err := common.DeserializeEntry(string(buffer))
+		entry, err := data.DeserializeEntry(string(buffer))
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +262,7 @@ func (table *SSTable) Entries() ([]*common.Entry, error) {
 		result = append(result, entry)
 	}
 
-	return nil, nil
+	return result, nil
 }
 
 func (table *SSTable) Iterator() *SSTableIterator {
@@ -272,7 +277,7 @@ func (iter *SSTableIterator) IsEmpty() bool {
 	return iter.position >= len(iter.table.index)
 }
 
-func (iter *SSTableIterator) Peek() (*common.Entry, bool, error) {
+func (iter *SSTableIterator) Peek() (*data.Entry, bool, error) {
 	if iter.IsEmpty() {
 		return nil, false, nil
 	}
@@ -290,7 +295,7 @@ func (iter *SSTableIterator) Peek() (*common.Entry, bool, error) {
 	return entry, true, nil
 }
 
-func (iter *SSTableIterator) Advance() (*common.Entry, bool, error) {
+func (iter *SSTableIterator) Advance() (*data.Entry, bool, error) {
 	if iter.IsEmpty() {
 		return nil, false, nil
 	}
@@ -316,8 +321,8 @@ func (iter *SSTableIterator) Advance() (*common.Entry, bool, error) {
 	return result, true, nil
 }
 
-func (table *SSTable) getEntryAt(offsetIdx int) (*common.Entry, error) {
-	var start int64
+func (table *SSTable) getEntryAt(offsetIdx int) (*data.Entry, error) {
+	var start int
 	if offsetIdx == 0 {
 		start = 0
 	} else {
@@ -325,7 +330,7 @@ func (table *SSTable) getEntryAt(offsetIdx int) (*common.Entry, error) {
 	}
 
 	end := table.index[offsetIdx]
-	if _, err := table.file.Seek(start, io.SeekStart); err != nil {
+	if _, err := table.file.Seek(int64(start), io.SeekStart); err != nil {
 		return nil, err
 	}
 
@@ -336,9 +341,9 @@ func (table *SSTable) getEntryAt(offsetIdx int) (*common.Entry, error) {
 		return nil, err
 	}
 
-	if int64(read) < bufferSize {
+	if read < bufferSize {
 		return nil, errors.New("Failed getting SSTable entry - read partial data from file")
 	}
 
-	return common.DeserializeEntry(string(buffer))
+	return data.DeserializeEntry(string(buffer))
 }

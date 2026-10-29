@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"atlas/internal/common"
+	"atlas/internal/data"
 	"errors"
 	"os"
 	"path"
@@ -47,10 +47,14 @@ func InitializeLsm(config LsmConfig) (*Lsm, error) {
 }
 
 func createNewLsm(config LsmConfig) (*Lsm, error) {
+	if err := os.MkdirAll(config.Dir, defaultDirPermission); err != nil {
+		return nil, err
+	}
+
 	var levels [][]*SSTable
 	for idx := range config.Levels {
-		dirName := strconv.FormatInt(int64(idx), 10)
-		if err := os.Mkdir(dirName, 0755); err != nil {
+		levelDir := filepath.Join(config.Dir, strconv.Itoa(idx))
+		if err := os.MkdirAll(levelDir, defaultDirPermission); err != nil {
 			return nil, err
 		}
 
@@ -117,7 +121,7 @@ func (lsm *Lsm) MergeWal(wal *Wal) error {
 	return nil
 }
 
-func (lsm *Lsm) Get(key string) (*common.Entry, bool, error) {
+func (lsm *Lsm) Get(key string) (*data.Entry, bool, error) {
 	for _, level := range lsm.levels {
 		for _, table := range level {
 			if key > table.maxKey {
@@ -156,10 +160,10 @@ func (lsm *Lsm) Merge(wal *Wal) error {
 	return nil
 }
 
-func (lsm *Lsm) mergeFirstLevel(walEntries []*common.Entry) error {
+func (lsm *Lsm) mergeFirstLevel(walEntries []*data.Entry) error {
 	resultEntries := walEntries
 	for _, table := range lsm.levels[0] {
-		entries, err := getFileEntries(table.file, table.index)
+		entries, err := getFileEntriesFromIndex(table.file, table.index)
 		if err != nil {
 			return err
 		}
@@ -168,10 +172,10 @@ func (lsm *Lsm) mergeFirstLevel(walEntries []*common.Entry) error {
 	}
 
 	resultEntries = deduplicateAndFilterEntries(resultEntries)
-	slices.SortFunc(resultEntries, common.CompareEntries)
+	slices.SortFunc(resultEntries, data.CompareEntries)
 
-	var entryBuckets [][]*common.Entry
-	var currentBucket []*common.Entry
+	var entryBuckets [][]*data.Entry
+	var currentBucket []*data.Entry
 	var currentBucketSize uint64 = 0
 	firstLevelMaxSize := lsm.config.Levels[0].MaxFileSize
 	for _, entry := range resultEntries {
@@ -212,12 +216,12 @@ func (lsm *Lsm) getNewSSTableFilename(tableLevel int64) string {
 	)
 }
 
-func deduplicateAndFilterEntries(entries []*common.Entry) []*common.Entry {
+func deduplicateAndFilterEntries(entries []*data.Entry) []*data.Entry {
 	if len(entries) == 0 {
 		return entries
 	}
 
-	latestEntries := make(map[string]*common.Entry)
+	latestEntries := make(map[string]*data.Entry)
 	for _, entry := range entries {
 		key := entry.Key()
 		latestEntry, exists := latestEntries[key]
@@ -230,7 +234,7 @@ func deduplicateAndFilterEntries(entries []*common.Entry) []*common.Entry {
 		}
 	}
 
-	var result []*common.Entry
+	var result []*data.Entry
 	for _, entry := range latestEntries {
 		if !entry.IsDead() {
 			result = append(result, entry)
