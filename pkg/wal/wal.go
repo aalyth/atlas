@@ -40,7 +40,7 @@ type (
 		lsn  uint64
 	}
 
-	// [checksum][LSN][len][timestamp][op][klen][key][data]
+	// [crc32 checksum][lsn][len][timestamp][op][klen][key][data]
 	record struct {
 		crc   uint32
 		lsn   uint64
